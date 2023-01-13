@@ -1,0 +1,741 @@
+---
+title: "H11N1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(VIM)
+library(psych)
+library(dplyr)
+library(feasts)
+library(ggplot2)
+library(zoo)
+library(kernlab)
+library(forecast)
+library(tseries)
+library(tidyverse)
+library(GauPro)
+```
+
+
+## import the data
+
+```{r cars}
+data <- load("D:\\2023 winter\\Dissertation\\H11N1bothseries.rda")
+```
+
+```{r}
+ls()
+head(weeklyseries,3)
+```
+
+```{r}
+matplot(monthlyseries[,'Band 89-112'], t="l", xlab='Record of even interval time',ylab='Band 89-112')
+title('Figure of Band 89-112 Monthly Data')
+```
+
+## clean the data
+
+### Outlier check
+```{r}
+summary(monthlyseries)
+```
+```{r}
+summary(weeklyseries)
+```
+
+
+```{r}
+# detect infinite
+any(is.infinite(weeklyseries))
+any(is.infinite(monthlyseries))
+
+# detect nan
+any(is.nan(weeklyseries))
+any(is.nan(monthlyseries))
+
+# detect na
+any(is.na(weeklyseries))
+any(is.na(monthlyseries))
+```
+
+### statistical: percentage of missing data
+```{r}
+percent_miss <- function(x){
+  sum(is.na(x))/length(x)
+}
+
+apply(weeklyseries,2,percent_miss)
+apply(monthlyseries,2,percent_miss)
+```
+
+```{r}
+weekly_imp <- weeklyseries
+monthly_imp <- monthlyseries
+
+
+
+# for weekly data
+imp_median_week <- apply(weekly_imp, 2, median, na.rm=TRUE) # getting median of each column using apply()
+
+for(i in colnames(weekly_imp))
+  weekly_imp[,i][is.na(weekly_imp[,i])] <- imp_median_week[i] # imputing median value with NA
+
+# for monthly data
+imp_median_month <- apply(monthly_imp, 2, median, na.rm=TRUE)
+
+for(i in colnames(monthly_imp))
+  monthly_imp[,i][is.na(monthly_imp[,i])] <- imp_median_month[i]
+
+
+
+any(is.na(weekly_imp))
+any(is.na(monthly_imp))
+```
+
+## split the training and test data
+
+```{r}
+# take first 80% data as training data, and last 20% as test data
+train_weekly <- head(weekly_imp, round(nrow(weekly_imp)*0.8))
+h_1 <- nrow(weekly_imp) - nrow(train_weekly)
+test_weekly <- tail(weekly_imp, h_1)
+
+train_monthly <- head(monthly_imp, round(nrow(monthly_imp)*0.8))
+h_2 <- nrow(monthly_imp) - nrow(train_monthly)
+test_monthly <- tail(monthly_imp, h_2)
+```
+
+## convert to time series
+```{r}
+# Take a column of data
+Broadband_w_train <- train_weekly[, 'Broadband']
+Broadband_w_test <- test_weekly[, 'Broadband']
+
+Broadband_m_train <- train_monthly[, 'Broadband']
+Broadband_m_test <- test_monthly[, 'Broadband']
+
+# convert to time series object
+ts_week <- ts(Broadband_w_train, start=c(2008,1), frequency=52)
+ts_month <- ts(Broadband_m_train, start=c(2008,1), frequency=12)
+
+ts_week_test <- ts(Broadband_w_test, start=c(2020,1), frequency=52)
+ts_month_test <- ts(Broadband_m_test, start=c(2020,1), frequency=12)
+
+# Visualisation
+ts.plot(ts_week,
+        ts_week_test,
+        gpars=list(col=c("black","blue")),
+        xlab='time(year)',
+        ylab='weekly recorded Broadband data',
+        main='Broadband weekly data (black for training and blue for test)') # matplot(ts_week,t="l")
+
+```
+
+## decompose
+
+```{r}
+de_week_data <- decompose(ts_week,"additive")
+plot(de_week_data)
+```
+
+```{r}
+de_month_data <- decompose(ts_month,"additive")
+plot(de_month_data) # main='Decomposition of additive Monthly Broadband'
+```
+
+## Holt Winter
+
+for monthly data
+
+```{r}
+fit_HW_month <- HoltWinters(ts_month, alpha = NULL, beta = NULL, gamma = NULL, seasonal="additive")
+fit_HW_month
+```
+
+```{r}
+HW_pred_m <- forecast(fit_HW_month, h=36, level=0.5)
+#visualize our predictions:
+plot(HW_pred_m,
+     xlab='time (year)',
+     ylab="Monthly Broadband", 
+     xlim=c(2008, 2020),
+     main='Forecasts of Monthly Broadband from Holt Winters')
+lines(HW_pred_m$fitted, lty=2, col="purple")
+#title('Forecasts of Monthly Broadband from Holt Winters')
+```
+
+
+```{r}
+acf(HW_pred_m$residuals, lag.max=20, na.action=na.pass,main='acf for Holt Winters')
+Box.test(HW_pred_m$residuals, lag=20, type="Ljung-Box")
+```
+
+```{r}
+hist(HW_pred_m$residuals, 
+     xlab='residuals of Holt Winter Prediction', 
+     main = 'Figure of Residuals of Monthly Holt Winters Model Prediction')
+```
+
+```{r}
+# calculate MSE
+MSE <- mean((ts_month_test - HW_pred_m$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_month_test - HW_pred_m$mean)^2))
+print(RMSE)
+
+```
+```{r}
+o <- length(ts_month)-sum(is.na(HW_pred_m$fitted))
+# calculate MSE of fitted values
+MSE <- mean((tail(ts_month,o) - HW_pred_m$fitted)^2)
+print(MSE)
+
+# calculate RMSE of fitted values
+RMSE <- sqrt(mean((tail(ts_month,o) - HW_pred_m$fitted)^2))
+print(RMSE)
+```
+
+for weekly data
+
+```{r}
+fit_HW_week <- HoltWinters(ts_week, alpha = NULL, beta = NULL, gamma = NULL, seasonal="additive")
+fit_HW_week
+```
+
+```{r}
+HW_pred_week <- forecast(fit_HW_week, h=145, level=0.5)
+#visualize our predictions:
+plot(HW_pred_week, 
+     xlab='time (year)',
+     ylab="Weekly Broadband", 
+     xlim=c(2008, 2020),
+     main='Forecasts of Weekly Broadband from Holt Winters')
+lines(HW_pred_week$fitted, lty=2, col="purple")
+```
+
+
+```{r}
+# calculate MSE of predicted values
+MSE <- mean((ts_week_test - HW_pred_week$mean)^2)
+print(MSE)
+
+# calculate RMSE of predicted values
+RMSE <- sqrt(mean((ts_week_test - HW_pred_week$mean)^2))
+print(RMSE)
+```
+
+
+```{r}
+o <- length(ts_week)-sum(is.na(HW_pred_week$fitted))
+# calculate MSE of fitted values
+MSE <- mean((tail(ts_week,o) - HW_pred_week$fitted)^2)
+print(MSE)
+
+# calculate RMSE of fitted values
+RMSE <- sqrt(mean((tail(ts_week,o) - HW_pred_week$fitted)^2))
+print(RMSE)
+```
+```{r}
+hist(HW_pred_week$residuals, 
+     xlab='residuals of Holt Winter Prediction', 
+     main = 'Figure of Residuals of Weekly Holt Winters Model Prediction')
+```
+
+## ARIMA
+
+```{r}
+adf.test(ts_month)
+adf.test(ts_week)
+```
+
+```{r}
+pacf(ts_month, lag.max=30, na.action=na.pass,main='acf for monthly broadband')
+```
+
+```{r}
+acf(ts_month, lag.max=30, na.action=na.pass,main='acf for monthly broadband')
+```
+
+```{r}
+ts_lag12 <- diff(ts_month, lag = 12)
+acf(ts_lag12, lag.max=20, na.action=na.pass,main='acf for lagged 12 monthly broadband')
+```
+
+
+```{r}
+auto.arima(ts_month, 
+           trace=TRUE,
+           seasonal=TRUE,
+           stationary=TRUE,
+           ic="aic")
+```
+
+```{r}
+fit_arima <- Arima(ts_month, order=c(2,0,1), seasonal = list(order = c(0,0,1)))
+print(fit_arima)
+```
+
+```{r}
+fitted_values <- ts_month - fit_arima$residuals
+
+arima_pred <- forecast(fit_arima, 36)
+plot(arima_pred, 
+     xlab='time (year)',
+     ylab="Monthly Broadband",)
+lines(fitted_values, col = 2)
+```
+
+```{r}
+# calculate MSE
+#pred_arima <- predict(fit_arima, 36)
+MSE <- mean((ts_month_test - arima_pred$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_month_test - arima_pred$mean)^2))
+print(RMSE)
+
+```
+```{r}
+o <- length(ts_month)-sum(is.na(arima_pred$fitted))
+# calculate MSE of fitted values
+MSE <- mean((tail(ts_month,o) - arima_pred$fitted)^2)
+print(MSE)
+
+# calculate RMSE of fitted values
+RMSE <- sqrt(mean((tail(ts_month,o) - arima_pred$fitted)^2))
+print(RMSE)
+```
+
+```{r}
+acf(arima_pred$residuals, lag.max=20, na.action=na.pass)
+Box.test(arima_pred$residuals, lag=20, type="Ljung-Box")
+hist(arima_pred$residuals,
+     xlab='residuals of ARIMA Prediction', 
+     main = 'Figure of Residuals of ARIMA Prediction')
+```
+
+```{r}
+auto.arima(ts_week, 
+           trace=TRUE,
+           seasonal=TRUE,
+           stationary=TRUE,
+           ic="aic")
+```
+
+```{r}
+fit_arima_week <- Arima(ts_week, order=c(2,0,0), seasonal = list(order = c(0,0,2)))
+print(fit_arima_week)
+```
+
+```{r}
+fitted_values_week <- ts_week - fit_arima_week$residuals
+
+arima_pred_week <- forecast(fit_arima_week, 145)
+plot(arima_pred_week, 
+     xlab='time (year)',
+     ylab="Weekly Broadband",)
+lines(fitted_values_week, col = 2)
+```
+
+```{r}
+# calculate MSE
+MSE <- mean((ts_week_test - arima_pred_week$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_week_test - arima_pred_week$mean)^2))
+print(RMSE)
+
+```
+
+```{r}
+o <- length(ts_week)-sum(is.na(arima_pred_week$fitted))
+# calculate MSE of fitted values
+MSE <- mean((tail(ts_week,o) - arima_pred_week$fitted)^2)
+print(MSE)
+
+# calculate RMSE of fitted values
+RMSE <- sqrt(mean((tail(ts_week,o) - arima_pred_week$fitted)^2))
+print(RMSE)
+```
+
+## gaussian process
+
+```{r}
+x_1 <- seq(from=1, to=length(ts_month), by=1)
+df_train_monthly <- data.frame(timeorder=x_1,value=ts_month)
+
+x_2 <- seq(from=1+length(ts_month), to=length(ts_month_test)+length(ts_month), by=1)
+df_test_monthly <- data.frame(timeorder=x_2,value=ts_month_test)
+```
+
+```{r}
+gp <- GauPro(x_1, ts_month, parallel=FALSE)
+```
+
+
+```{r}
+pred_train_gp <- predict(gp, x_1)
+pred_test_gp <- predict(gp, x_2)
+
+ggplot(data = df_train_monthly, aes(x = timeorder, y = value)) +
+  geom_line() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  geom_point(aes(y = pred_train_gp),color="blue") +
+  labs(title = "Fitted results of Gaussian Process (monthly)", x = "time interval", y = "Broadband Value")
+```
+
+
+```{r}
+gp_residuals <- (pred_train_gp - df_train_monthly[,2])
+
+
+hist(gp_residuals, 
+     xlab='residuals of Gaussian Process Prediction', 
+     main = 'Figure of Residuals of Monthly Gaussian Process Model Prediction')
+```
+
+
+```{r}
+# calculate MSE of training data set
+MSE_train <- mean((df_train_monthly[,2] - pred_train_gp)^2)
+print(MSE_train)
+
+# calculate RMSE of training data set
+RMSE_train <- sqrt(mean((df_train_monthly[,2] - pred_train_gp)^2))
+print(RMSE_train)
+
+
+# calculate MSE of test data set
+MSE <- mean((df_test_monthly[,2] - pred_test_gp)^2)
+print(MSE)
+
+# calculate RMSE of test data set
+RMSE <- sqrt(mean((df_test_monthly[,2] - pred_test_gp)^2))
+print(RMSE)
+```
+```{r}
+x_3 <- seq(from=1, to=length(ts_week), by=1)
+df_train_weekly <- data.frame(timeorder=x_3,value=ts_week)
+
+x_4 <- seq(from=1+length(ts_week), to=length(ts_week_test)+length(ts_week), by=1)
+df_test_weekly <- data.frame(timeorder=x_4,value=ts_week_test)
+```
+
+```{r}
+gp_week <- GauPro(x_3, ts_week, parallel=FALSE)
+```
+
+```{r}
+pred_train_weekgp <- predict(gp_week, x_3)
+pred_test_weekgp <- predict(gp_week, x_4)
+
+ggplot(data = df_train_weekly, aes(x = timeorder, y = value)) +
+  geom_line() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  geom_point(aes(y = pred_train_weekgp),color="blue") +
+  labs(title = "Fitted results of Gaussian Process (weekly)", x = "time interval", y = "Broadband Value")
+```
+
+```{r}
+gp_week_residuals <- (pred_train_weekgp - df_train_weekly[,2])
+
+
+hist(gp_week_residuals, 
+     xlab='residuals of Gaussian Process Prediction', 
+     main = 'Figure of Residuals of Weekly Gaussian Process Model Prediction')
+```
+```{r}
+# calculate MSE of training data set
+MSE_train <- mean((df_train_weekly[,2] - pred_train_weekgp)^2)
+print(MSE_train)
+
+# calculate RMSE of training data set
+RMSE_train <- sqrt(mean((df_train_weekly[,2] - pred_train_weekgp)^2))
+print(RMSE_train)
+
+
+# calculate MSE of test data set
+MSE <- mean((df_test_weekly[,2] - pred_test_weekgp)^2)
+print(MSE)
+
+# calculate RMSE of test data set
+RMSE <- sqrt(mean((df_test_weekly[,2] - pred_test_weekgp)^2))
+print(RMSE)
+```
+## choose the best-performing model and forecast future 3 years
+
+```{r}
+# convert to time series object
+ts_week_Broadband <- ts(weekly_imp[, 'Broadband'], start=c(2008,1), frequency=52)
+ts_month_Broadband <- ts(monthly_imp[, 'Broadband'], start=c(2008,1), frequency=12)
+
+fit_Holt <- HoltWinters(ts_week_Broadband, alpha = 0.6378018, beta = 0, gamma = 0.4544292, seasonal="additive")
+Holt_pred_week <- forecast(fit_Holt, h=156, level=0.5)
+#visualize our predictions:
+plot(Holt_pred_week, 
+     xlab='time (year)',
+     ylab="Weekly Broadband", 
+     main='Forecasts of future 156 weeks from Holt Winters based on Weekly Broadband')
+lines(Holt_pred_week$fitted, lty=2, col='purple')
+abline(h=82,col=2,lty=2)
+```
+```{r}
+fit_ARIMA <- Arima(ts_month_Broadband, order=c(2,0,1), seasonal = list(order = c(0,0,1)))
+
+#fitted_values <- ts_month - fit_arima$residuals
+
+Arima_pred <- forecast(fit_ARIMA, 36)
+plot(Arima_pred, 
+     xlab='time (year)',
+     ylab="Monthly Broadband",)
+lines(fit_ARIMA$fitted, col = 2)
+abline(h=82.3, col=6, lty=2)
+```
+# Band 89-112
+
+```{r}
+Band89_112_w_train <- train_weekly[, 'Band 89-112']
+Band89_112_w_test <- test_weekly[, 'Band 89-112']
+
+Band89_112_m_train <- train_monthly[, 'Band 89-112']
+Band89_112_m_test <- test_monthly[, 'Band 89-112']
+
+# convert to time series object
+ts_week_1 <- ts(Band89_112_w_train, start=c(2008,1), frequency=52)
+ts_month_1 <- ts(Band89_112_m_train, start=c(2008,1), frequency=12)
+
+ts_week_test_1 <- ts(Band89_112_w_test, start=c(2020,1), frequency=52)
+ts_month_test_1 <- ts(Band89_112_m_test, start=c(2020,1), frequency=12)
+
+# Visualisation
+ts.plot(ts_week_1,
+        ts_week_test_1,
+        gpars=list(col=c("black","blue")),
+        xlab='time(year)',
+        ylab='weekly recorded Broadband data',
+        main='Band 89-112 weekly data (black for training and blue for test)')
+```
+
+
+```{r}
+de_week_band89_112 <- decompose(ts_week_1,"additive")
+plot(de_week_band89_112)
+```
+```{r}
+fit_HW_month_1 <- HoltWinters(ts_month_1, alpha = NULL, beta = NULL, gamma = NULL, seasonal="additive")
+fit_HW_month_1
+```
+```{r}
+HW_pred_m_1 <- forecast(fit_HW_month_1, h=36, level=0.5)
+#visualize our predictions:
+plot(HW_pred_m_1,
+     xlab='time (year)',
+     ylab="Monthly Band 89-112", 
+     xlim=c(2008, 2020),
+     ylim=c(70,85),
+     main='Forecasts of Monthly Band 89-112 from Holt Winters')
+lines(HW_pred_m_1$fitted, lty=2, col="purple")
+```
+```{r}
+MSE <- mean((ts_month_test_1 - HW_pred_m_1$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_month_test_1 - HW_pred_m_1$mean)^2))
+print(RMSE)
+```
+```{r}
+fit_HW_week_1 <- HoltWinters(ts_week_1, alpha = NULL, beta = NULL, gamma = NULL, seasonal="additive")
+fit_HW_week_1
+```
+
+```{r}
+HW_pred_w_1 <- forecast(fit_HW_week_1, h=145, level=0.5)
+#visualize our predictions:
+plot(HW_pred_w_1,
+     xlab='time (year)',
+       ylab="weekly Band 89-112", 
+     xlim=c(2008, 2020),
+     ylim=c(70,85),
+       main='Forecasts of Weekly Band 89-112 from Holt Winters')
+lines(HW_pred_w_1$fitted, lty=2, col="purple")
+```
+```{r}
+MSE <- mean((ts_week_test_1 - HW_pred_w_1$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_week_test_1 - HW_pred_w_1$mean)^2))
+print(RMSE)
+```
+
+## ARIMA
+```{r}
+adf.test(ts_month_1)
+adf.test(ts_week_1)
+```
+
+```{r}
+auto.arima(ts_month_1, 
+           trace=TRUE,
+           seasonal=TRUE,
+           stationary=TRUE,
+           ic="aic")
+```
+
+```{r}
+fit_arima_1 <- Arima(ts_month_1, order=c(2,0,1), seasonal = list(order = c(0,0,1)))
+
+fitted_values_1 <- ts_month_1 - fit_arima_1$residuals
+
+arima_pred_1 <- forecast(fit_arima_1, 36)
+plot(arima_pred_1, 
+     xlab='time (year)',
+     ylab="Monthly Band 89-112",)
+lines(fitted_values_1, col = 2)
+```
+```{r}
+# calculate MSE
+MSE <- mean((ts_month_test_1 - arima_pred_1$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_month_test_1 - arima_pred_1$mean)^2))
+print(RMSE)
+```
+```{r}
+auto.arima(ts_week_1, 
+           trace=TRUE,
+           seasonal=TRUE,
+           stationary=TRUE,
+           ic="aic")
+```
+
+```{r}
+fit_arima_week_1 <- Arima(ts_week_1, order=c(1,0,2), seasonal = list(order = c(0,0,2)))
+```
+
+```{r}
+fitted_values_week_1 <- ts_week_1 - fit_arima_week_1$residuals
+
+arima_pred_week_1 <- forecast(fit_arima_week_1, 145)
+plot(arima_pred_week_1, 
+     xlab='time (year)',
+     ylab="Weekly Band 89-112",)
+lines(fitted_values_week_1, col = 2)
+```
+
+
+```{r}
+# calculate MSE
+MSE <- mean((ts_week_test_1 - arima_pred_week_1$mean)^2)
+print(MSE)
+
+# calculate RMSE
+RMSE <- sqrt(mean((ts_week_test_1 - arima_pred_week_1$mean)^2))
+print(RMSE)
+```
+```{r}
+x_5 <- seq(from=1, to=length(ts_month_1), by=1)
+df_train_monthly_89_112 <- data.frame(timeorder=x_5,value=ts_month_1)
+
+x_6 <- seq(from=1+length(ts_month_1), to=length(ts_month_test_1)+length(ts_month_1), by=1)
+df_test_monthly_89_112 <- data.frame(timeorder=x_6,value=ts_month_test_1)
+```
+
+```{r}
+gp_month_89_112 <- GauPro(x_5, ts_month_1, parallel=FALSE)
+```
+
+```{r}
+pred_train_gp_89_112 <- predict(gp_month_89_112, x_5)
+pred_test_gp_89_112 <- predict(gp_month_89_112, x_6)
+
+ggplot(data = df_train_monthly_89_112, aes(x = timeorder, y = value)) +
+  geom_line() +
+  geom_point(aes(y = pred_train_gp_89_112),color="blue") +
+  labs(title = "Fitted results of Gaussian Process (monthly) based on Band 89-112", x = "time interval", y = "Band 89-112 Value")
+```
+
+```{r}
+# calculate MSE of test data set
+MSE <- mean((df_test_monthly_89_112[,2] - pred_test_gp_89_112)^2)
+print(MSE)
+
+# calculate RMSE of test data set
+RMSE <- sqrt(mean((df_test_monthly_89_112[,2] - pred_test_gp_89_112)^2))
+print(RMSE)
+```
+
+```{r}
+x_7 <- seq(from=1, to=length(ts_week_1), by=1)
+df_train_weekly_89_112 <- data.frame(timeorder=x_7,value=ts_week_1)
+
+x_8 <- seq(from=1+length(ts_week_1), to=length(ts_week_test_1)+length(ts_week_1), by=1)
+df_test_weekly_89_112 <- data.frame(timeorder=x_8,value=ts_week_test_1)
+```
+
+```{r}
+gp_week_89_112 <- GauPro(x_7, ts_week_1, parallel=FALSE)
+```
+
+```{r}
+pred_train_gp_89_112_w <- predict(gp_week_89_112, x_7)
+pred_test_gp_89_112_w <- predict(gp_week_89_112, x_8)
+
+ggplot(data = df_train_weekly_89_112, aes(x = timeorder, y = value)) +
+  geom_line() +
+  geom_point(aes(y = pred_train_gp_89_112_w),color="blue") +
+  labs(title = "Fitted results of Gaussian Process (weekly) based on Band 89-112", x = "time interval", y = "Band 89-112 Value")
+```
+
+```{r}
+# calculate MSE of test data set
+MSE <- mean((df_test_weekly_89_112[,2] - pred_test_gp_89_112_w)^2)
+print(MSE)
+
+# calculate RMSE of test data set
+RMSE <- sqrt(mean((df_test_weekly_89_112[,2] - pred_test_gp_89_112_w)^2))
+print(RMSE)
+```
+
+
+```{r}
+# convert to time series object
+ts_week_Band_89_112 <- ts(weekly_imp[, 'Band 89-112'], start=c(2008,1), frequency=52)
+ts_month_Band_89_112 <- ts(monthly_imp[, 'Band 89-112'], start=c(2008,1), frequency=12)
+
+
+
+fit_arima_month_89_112 <- Arima(ts_month_Band_89_112, order=c(2,0,1), seasonal = list(order = c(0,0,1)))
+
+
+arima_pred_month_89_112 <- forecast(fit_arima_month_89_112, 36)
+plot(arima_pred_month_89_112, 
+     xlab='time (year)',
+     ylab="Monthly Band_28_35",)
+lines(fit_arima_month_89_112$fitted, col = 2)
+abline(h=77,col=6,lty=2)
+```
+```{r}
+fit_arima_week_89_112 <- Arima(ts_week_Band_89_112, order=c(1,0,2), seasonal = list(order = c(0,0,2)))
+
+arima_pred_week_89_112 <- forecast(fit_arima_week_89_112, 156)
+plot(arima_pred_week_89_112, 
+     xlab='time (year)',
+     ylab="Weekly Band_28_35",)
+lines(fit_arima_week_89_112$fitted, col = 2)
+abline(h=77,col=6,lty=2)
+```
+
+
